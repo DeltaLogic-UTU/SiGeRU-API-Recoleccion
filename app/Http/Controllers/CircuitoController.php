@@ -8,7 +8,6 @@ use Illuminate\Support\Facades\Schema;
 
 class CircuitoController extends Controller
 {
-    // Lista todos los circuitos con sus coordenadas y cantidad de contenedores
     public function index()
     {
         $conteos = DB::table('contenedores')
@@ -22,7 +21,7 @@ class CircuitoController extends Controller
             ->get()
             ->map(function ($item) use ($conteos) {
                 $coordenadas = null;
-                if (!empty($item->coordenadas)) {
+                if (!empty($item->coordenadas ?? null)) {
                     $decodificado = json_decode($item->coordenadas, true);
                     if (is_array($decodificado)) {
                         $coordenadas = $decodificado;
@@ -46,13 +45,11 @@ class CircuitoController extends Controller
         ]);
     }
 
-    // Guarda un nuevo circuito dibujado en el mapa o actualiza uno existente
     public function store(Request $request)
     {
         return $this->guardarCircuito($request, null);
     }
 
-    // Actualiza un circuito existente seleccionado en el mapa
     public function update(Request $request, string $id)
     {
         return $this->guardarCircuito($request, $id);
@@ -70,7 +67,6 @@ class CircuitoController extends Controller
 
         $codigo = strtoupper(trim($validated['id_circuito']));
 
-        // Si no se envió municipio, lo deducimos del prefijo del código (ej: CH_101 -> CH)
         $municipio = !empty($validated['municipio']) ? strtoupper(trim($validated['municipio'])) : null;
         if (!$municipio && str_contains($codigo, '_')) {
             $municipio = explode('_', $codigo)[0];
@@ -79,7 +75,6 @@ class CircuitoController extends Controller
             $municipio = 'CH';
         }
 
-        // Zona y descripción son opcionales
         $zona = isset($validated['zona']) && trim((string) $validated['zona']) !== ''
             ? trim((string) $validated['zona'])
             : null;
@@ -99,8 +94,14 @@ class CircuitoController extends Controller
             ], 422);
         }
 
+        if (!Schema::hasColumn('circuitos', 'coordenadas')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'La base aún no tiene la columna coordenadas. Aplicá el parche SQL de SiGeRu.'
+            ], 422);
+        }
+
         DB::transaction(function () use ($codigo, $idOriginal, $municipio, $zona, $descripcion, $coordenadas) {
-            // 1. Armamos los campos seguros para la tabla circuitos
             $datosCircuito = [
                 'coordenadas' => json_encode($coordenadas)
             ];
@@ -122,7 +123,6 @@ class CircuitoController extends Controller
                 $datosCircuito
             );
 
-            // 2. Armamos los campos seguros para sincronizar la tabla rutas
             $datosRuta = [
                 'municipio' => $municipio
             ];
@@ -144,7 +144,6 @@ class CircuitoController extends Controller
                 $datosRuta
             );
 
-            // Si se estaba editando un circuito y se le cambió el código, reasignamos sus contenedores y borramos el viejo
             if ($idOriginal && strtoupper($idOriginal) !== $codigo) {
                 DB::table('contenedores')
                     ->where('circuito', $idOriginal)
@@ -178,11 +177,15 @@ class CircuitoController extends Controller
                 DB::table('circuitos')->where('id_circuito', $idOriginal)->delete();
             }
 
-            // 3. Vinculamos automáticamente todos los contenedores que queden dentro del polígono de este circuito
-            $contenedoresConUbicacion = DB::table('contenedores')
-                ->whereNotNull('latitud')
-                ->whereNotNull('longitud')
-                ->get(['id_contenedor', 'latitud', 'longitud']);
+            $contenedoresConUbicacion = DB::table('contenedores as c')
+                ->join('ubicacion as u', 'c.id_ubicacion', '=', 'u.id_ubicacion')
+                ->whereNotNull('u.latitud')
+                ->whereNotNull('u.longitud')
+                ->get([
+                    'c.id_contenedor',
+                    'u.latitud',
+                    'u.longitud'
+                ]);
 
             $idsDentro = [];
             foreach ($contenedoresConUbicacion as $cont) {
@@ -218,7 +221,6 @@ class CircuitoController extends Controller
         ], $idOriginal ? 200 : 201);
     }
 
-    // Consulta los detalles de un circuito específico
     public function show(string $id)
     {
         $circuito = DB::table('circuitos')
@@ -233,7 +235,7 @@ class CircuitoController extends Controller
         }
 
         $coordenadas = null;
-        if (!empty($circuito->coordenadas)) {
+        if (!empty($circuito->coordenadas ?? null)) {
             $coordenadas = json_decode($circuito->coordenadas, true);
         }
 
@@ -256,7 +258,6 @@ class CircuitoController extends Controller
         ]);
     }
 
-    // Comprueba geométricamente si un contenedor (lat, lng) cae dentro del polígono del circuito
     private function puntoDentroDePoligono(float $lat, float $lng, array $poligono): bool
     {
         $dentro = false;

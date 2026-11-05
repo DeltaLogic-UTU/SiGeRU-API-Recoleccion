@@ -5,8 +5,11 @@ use Illuminate\Support\Facades\Route;
 
 // Rutas públicas y operativas de la API de Recolección (Puerto 8002)
 Route::get('recolecciones', [RecoleccionController::class, 'index']);
+Route::post('rutas/despachar', [RecoleccionController::class, 'despacharRuta']);
 Route::get('chofer/ruta', [RecoleccionController::class, 'rutaDeChofer']);
 Route::post('recolecciones/iniciar', [RecoleccionController::class, 'iniciarRecoleccion']);
 Route::post('recolecciones/{id}/contenedor', [RecoleccionController::class, 'recolectarContenedor'])->whereNumber('id');
 Route::post('recolecciones/{id}/finalizar', [RecoleccionController::class, 'finalizarRecoleccion'])->whereNumber('id');
 Route::put('camiones/{id}/gps', [RecoleccionController::class, 'actualizarGpsCamion'])->whereNumber('id');
+
+Route::get('chofer/historial-rutas', [RecoleccionController::class, 'historialRutasChofer']);

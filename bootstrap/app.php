@@ -12,7 +12,6 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        //  Se desactiva la validación de CSRF en todas las rutas
         
         $middleware->validateCsrfTokens(except: [
             '*',

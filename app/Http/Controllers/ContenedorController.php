@@ -142,21 +142,21 @@ class ContenedorController extends Controller
             ->selectRaw(
                 'SUM(CASE
                     WHEN c.id_contenedor IS NOT NULL
-                    AND COALESCE(c.dias_sin_recoleccion, 0) <= 2
+                    AND COALESCE(DATEDIFF(CURDATE(), c.ultimo_registro), c.dias_sin_recoleccion, 0) <= 2
                     THEN 1 ELSE 0
                 END) AS verde'
             )
             ->selectRaw(
                 'SUM(CASE
                     WHEN c.id_contenedor IS NOT NULL
-                    AND COALESCE(c.dias_sin_recoleccion, 0) BETWEEN 3 AND 5
+                    AND COALESCE(DATEDIFF(CURDATE(), c.ultimo_registro), c.dias_sin_recoleccion, 0) BETWEEN 3 AND 5
                     THEN 1 ELSE 0
                 END) AS amarillo'
             )
             ->selectRaw(
                 'SUM(CASE
                     WHEN c.id_contenedor IS NOT NULL
-                    AND COALESCE(c.dias_sin_recoleccion, 0) >= 6
+                    AND COALESCE(DATEDIFF(CURDATE(), c.ultimo_registro), c.dias_sin_recoleccion, 0) >= 6
                     THEN 1 ELSE 0
                 END) AS rojo'
             );
@@ -236,16 +236,10 @@ class ContenedorController extends Controller
 
         $datos = $this->validar($request);
 
-        $dias = array_key_exists(
-            'dias_sin_recoleccion',
-            $datos
-        )
-            ? (int) $datos['dias_sin_recoleccion']
-            : $this->calcularDias(
-                $datos['ultimo_registro'] ?? null
-            );
+        $ultimoRegistro = $datos['ultimo_registro'] ?? now()->toDateString();
+        $dias = $this->calcularDias($ultimoRegistro);
 
-        $id = DB::transaction(function () use ($datos, $dias) {
+        $id = DB::transaction(function () use ($datos, $dias, $ultimoRegistro) {
             $idUbicacion = $this->obtenerOCrearUbicacion($datos);
 
             $id = DB::table('contenedores')->insertGetId([
@@ -257,7 +251,7 @@ class ContenedorController extends Controller
                 'dias_sin_recoleccion' => $dias,
                 'id_ubicacion' => $idUbicacion,
                 'circuito' => $datos['circuito'],
-                'ultimo_registro' => $datos['ultimo_registro'] ?? now()->toDateString(),
+                'ultimo_registro' => $ultimoRegistro,
                 'activo' => 1
             ]);
 
@@ -312,24 +306,14 @@ class ContenedorController extends Controller
             $id
         );
 
-        $dias = array_key_exists(
-            'dias_sin_recoleccion',
-            $datos
-        )
-            ? (int) $datos['dias_sin_recoleccion']
-            : (
-                ($datos['ultimo_registro'] ?? null) !==
-                $anterior->ultimo_registro
-                    ? $this->calcularDias(
-                        $datos['ultimo_registro'] ?? null
-                    )
-                    : (int) $anterior->dias_sin_recoleccion
-            );
+        $ultimoRegistro = $datos['ultimo_registro'] ?? $anterior->ultimo_registro ?? now()->toDateString();
+        $dias = $this->calcularDias($ultimoRegistro);
 
         DB::transaction(function () use (
             $id,
             $datos,
             $dias,
+            $ultimoRegistro,
             $anterior
         ) {
             $idUbicacionNueva =
@@ -447,8 +431,7 @@ class ContenedorController extends Controller
                     'dias_sin_recoleccion' => $dias,
                     'id_ubicacion' => $idUbicacionNueva,
                     'circuito' => $datos['circuito'],
-                    'ultimo_registro' =>
-                        $datos['ultimo_registro'] ?? $anterior->ultimo_registro
+                    'ultimo_registro' => $ultimoRegistro
                 ]);
 
             if (count($cambios)) {
@@ -946,7 +929,6 @@ class ContenedorController extends Controller
                 )
             );
 
-            // Si desde el mapa se envía "funcionando", lo guardamos como "funcional"
             if ($estado === 'funcionando') {
                 $estado = 'funcional';
             }
@@ -954,7 +936,6 @@ class ContenedorController extends Controller
             $datos['estado'] = $estado;
         }
 
-        // Si se crea desde el mapa con latitud y longitud, completamos circuito, municipio, calle y primer día automáticamente
         if (
             $request->filled('latitud') &&
             $request->filled('longitud')
@@ -977,7 +958,7 @@ class ContenedorController extends Controller
             }
 
             if (!$request->filled('dias_sin_recoleccion')) {
-                $datos['dias_sin_recoleccion'] = 1;
+                $datos['dias_sin_recoleccion'] = 0;
             }
         }
 
@@ -1051,7 +1032,6 @@ class ContenedorController extends Controller
             )
             : null;
 
-        // Si se está creando un punto directamente en el mapa con coordenadas, creamos su ubicación propia
         if (
             !empty($datos['latitud']) &&
             !empty($datos['longitud'])
@@ -1199,20 +1179,17 @@ class ContenedorController extends Controller
     private function formatearContenedor(
         $item
     ): array {
-        //tomaremos la fecha del ultimo registro del contenedor para calcular dias sin recoleccion
         $fechaBase = $item->ultimo_registro;
 
        if (!$fechaBase) {
             $fechaBase = DB::table('historial_contenedores')
                 ->where('id_contenedor', $item->id_contenedor)
-                ->orderBy('id_historial', 'asc')
+                ->orderByDesc('fecha')
                 ->value('fecha');
         }
-        //calculo 
         $dias = $fechaBase
-            ? ($this->calcularDias($fechaBase) +1)
-            : max(1, (int) ($item->dias_sin_recoleccion ?? 1)
-        );
+            ? $this->calcularDias($fechaBase)
+            : max(0, (int) ($item->dias_sin_recoleccion ?? 0));
 
         return [
             'id_contenedor' =>
@@ -1335,7 +1312,6 @@ class ContenedorController extends Controller
             ->diffInDays($hoy);
     }
 
-    // Escala de 5 colores según los días que lleva el contenedor sin ser recolectado
     private function nivelDesdeDias(
         int $dias
     ): string {
@@ -1343,27 +1319,17 @@ class ContenedorController extends Controller
             return 'verde';
         }
 
-        if ($dias === 3) {
+        if ($dias <= 5) {
             return 'amarillo';
         }
 
-        if ($dias === 4) {
-            return 'naranja';
-        }
-
-        if ($dias === 5) {
-            return 'rojo';
-        }
-
-        return 'negro';
+        return 'rojo';
     }
 
-    // Detecta el circuito y municipio según la latitud y longitud elegida en el mapa
     private function detectarCircuitoPorCoordenadas(
         float $lat,
         float $lng
     ): array {
-        // 1. Buscamos si el punto cae dentro del polígono de alguno de los circuitos activos
         $circuitos = DB::table('circuitos')
             ->whereNotNull('coordenadas')
             ->get();
@@ -1380,7 +1346,6 @@ class ContenedorController extends Controller
             }
         }
 
-        // 2. Si no cae dentro de ningún polígono, usamos el primer circuito disponible en rutas
         $primeraRuta = DB::table('rutas')
             ->orderBy('circuito')
             ->first();
@@ -1395,7 +1360,6 @@ class ContenedorController extends Controller
         return ['municipio' => 'CH', 'circuito' => 'CH_101'];
     }
 
-    // Comprueba de forma sencilla si una coordenada (lat, lng) está dentro de un polígono
     private function puntoEnPoligono(
         float $lat,
         float $lng,
